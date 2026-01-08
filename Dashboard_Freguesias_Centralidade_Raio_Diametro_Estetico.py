@@ -1,4 +1,9 @@
 ﻿# -*- coding: utf-8 -*-
+
+import gzip
+import pickle
+
+
 import math
 from pathlib import Path
 
@@ -262,7 +267,38 @@ def build_network_figure(G_reduced, node_df, selected_freg, search_text):
 def build_data():
     BASE_DIR = Path(__file__).resolve().parent
     DATA_DIR = BASE_DIR / "data"
+    CACHE_DIR = BASE_DIR / "cache"
+    CACHE_DIR.mkdir(exist_ok=True)
 
+    cache_path = CACHE_DIR / "precomputed.pkl.gz"
+
+    # ============================================================
+    # 1) Modo leve (Render): se existir cache, carrega e sai
+    # ============================================================
+    if cache_path.exists():
+        with gzip.open(cache_path, "rb") as f:
+            payload = pickle.load(f)
+
+        node_df = payload["node_df"]
+        summary_df = payload["summary_df"]
+        edges = payload["edges"]
+
+        G_reduced = nx.Graph()
+        G_reduced.add_edges_from(edges)
+
+        # repor atributos essenciais (para o mapa) a partir do node_df
+        attr = (
+            node_df.set_index("id")[["name", "lat", "lon"]]
+            .rename(columns={"name": "stop_name", "lat": "stop_lat", "lon": "stop_lon"})
+            .to_dict("index")
+        )
+        nx.set_node_attributes(G_reduced, attr)
+
+        return G_reduced, node_df, summary_df
+
+    # ============================================================
+    # 2) Modo pesado (PC): calcula tudo e grava cache
+    # ============================================================
     file_stops = DATA_DIR / "stops.txt"
     file_times = DATA_DIR / "stop_times.txt"
 
@@ -323,7 +359,17 @@ def build_data():
     node_df = pd.DataFrame(node_rows)
     summary_df = compute_freguesia_stats(G_reduced, node_df)
 
+    # Gravar cache para o Render arrancar leve
+    payload = {
+        "node_df": node_df,
+        "summary_df": summary_df,
+        "edges": list(G_reduced.edges()),
+    }
+    with gzip.open(cache_path, "wb") as f:
+        pickle.dump(payload, f, protocol=pickle.HIGHEST_PROTOCOL)
+
     return G_reduced, node_df, summary_df
+
 
 
 # ==============================================================================
