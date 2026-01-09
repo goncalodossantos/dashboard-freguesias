@@ -1,7 +1,8 @@
 ﻿# -*- coding: utf-8 -*-
-
+import os
 import gzip
 import pickle
+
 
 
 import math
@@ -271,37 +272,29 @@ def build_data():
     CACHE_DIR.mkdir(exist_ok=True)
 
     cache_path = CACHE_DIR / "precomputed.pkl.gz"
-    sig_path = CACHE_DIR / "cache.sig"
 
-    file_stops = DATA_DIR / "stops.txt"
-    file_times = DATA_DIR / "stop_times.txt"
+    # Detectar que estamos em Render:
+    # - Render define a env var PORT e também costuma expor RENDER (em muitos serviços)
+    on_render = ("RENDER" in os.environ) or ("PORT" in os.environ)
 
-    if not file_stops.exists():
-        raise FileNotFoundError(f"Ficheiro não encontrado: {file_stops}")
-    if not file_times.exists():
-        raise FileNotFoundError(f"Ficheiro não encontrado: {file_times}")
-
-    # Assinatura para invalidar cache quando os dados mudarem
-    sig = f"{file_stops.stat().st_size}-{file_times.stat().st_size}"
-
-
-    # ============================================================
-    # 1) Modo leve (Render): carrega cache válida e reconstrói grafo
-    # ============================================================
-    if cache_path.exists() and sig_path.exists() and sig_path.read_text().strip() == sig:
+    # ------------------------------------------------------------
+    # 1) Tentar SEMPRE carregar cache (especialmente no Render)
+    # ------------------------------------------------------------
+    if cache_path.exists():
+        print("USING CACHE ✅", flush=True)
         with gzip.open(cache_path, "rb") as f:
             payload = pickle.load(f)
 
         node_df = payload["node_df"]
         summary_df = payload["summary_df"]
-        nodes = payload["nodes"]          # inclui isolados
+        nodes = payload["nodes"]
         edges = payload["edges"]
 
         G_reduced = nx.Graph()
-        G_reduced.add_nodes_from(nodes)   # <-- crítico para raio/diâmetro
+        G_reduced.add_nodes_from(nodes)    # inclui isolados -> raio/diâmetro e centralidades ficam consistentes
         G_reduced.add_edges_from(edges)
 
-        # repor atributos essenciais do nó (para mapa/posições)
+        # Repor atributos essenciais do nó para o mapa
         attr = (
             node_df.set_index("id")[["name", "lat", "lon"]]
             .rename(columns={"name": "stop_name", "lat": "stop_lat", "lon": "stop_lon"})
@@ -311,9 +304,26 @@ def build_data():
 
         return G_reduced, node_df, summary_df
 
-    # ============================================================
-    # 2) Modo pesado (PC): calcula tudo e grava cache leve
-    # ============================================================
+    # ------------------------------------------------------------
+    # 2) Se NÃO há cache e estamos no Render: NÃO recalcular (evita OOM)
+    # ------------------------------------------------------------
+    if on_render:
+        raise RuntimeError(
+            "CACHE EM FALTA no Render. O plano Free (512MiB) não suporta recalcular a partir de stop_times.txt. "
+            "Gera a cache localmente e faz git push da pasta ./cache."
+        )
+
+    # ------------------------------------------------------------
+    # 3) Modo local (PC): calcular e gerar cache
+    # ------------------------------------------------------------
+    file_stops = DATA_DIR / "stops.txt"
+    file_times = DATA_DIR / "stop_times.txt"
+
+    if not file_stops.exists():
+        raise FileNotFoundError(f"Ficheiro não encontrado: {file_stops}")
+    if not file_times.exists():
+        raise FileNotFoundError(f"Ficheiro não encontrado: {file_times}")
+
     stops_df = read_csv_auto(file_stops)
     stop_times_df = read_csv_auto(file_times)
 
@@ -364,7 +374,7 @@ def build_data():
     node_df = pd.DataFrame(node_rows)
     summary_df = compute_freguesia_stats(G_reduced, node_df)
 
-    # Cache leve (não guarda objeto Graph inteiro!)
+    # Guardar cache leve (sem guardar objeto Graph inteiro)
     payload = {
         "node_df": node_df,
         "summary_df": summary_df,
@@ -374,7 +384,7 @@ def build_data():
     with gzip.open(cache_path, "wb") as f:
         pickle.dump(payload, f, protocol=pickle.HIGHEST_PROTOCOL)
 
-    sig_path.write_text(sig)
+    print("CACHE WRITTEN ✅", cache_path, flush=True)
 
     return G_reduced, node_df, summary_df
 
