@@ -271,43 +271,35 @@ def build_data():
     CACHE_DIR.mkdir(exist_ok=True)
 
     cache_path = CACHE_DIR / "precomputed.pkl.gz"
+    sig_path = CACHE_DIR / "cache.sig"
 
-    # ============================================================
-    # 1) Modo leve (Render): se existir cache, carrega e sai
-    # ============================================================
-    if cache_path.exists():
-        with gzip.open(cache_path, "rb") as f:
-            payload = pickle.load(f)
-
-        node_df = payload["node_df"]
-        summary_df = payload["summary_df"]
-        edges = payload["edges"]
-
-        G_reduced = nx.Graph()
-        G_reduced.add_edges_from(edges)
-
-        # repor atributos essenciais (para o mapa) a partir do node_df
-        attr = (
-            node_df.set_index("id")[["name", "lat", "lon"]]
-            .rename(columns={"name": "stop_name", "lat": "stop_lat", "lon": "stop_lon"})
-            .to_dict("index")
-        )
-        nx.set_node_attributes(G_reduced, attr)
-
-        return G_reduced, node_df, summary_df
-
-    # ============================================================
-    # 2) Modo pesado (PC): calcula tudo e grava cache
-    # ============================================================
     file_stops = DATA_DIR / "stops.txt"
     file_times = DATA_DIR / "stop_times.txt"
 
     if not file_stops.exists():
         raise FileNotFoundError(f"Ficheiro não encontrado: {file_stops}")
-
     if not file_times.exists():
         raise FileNotFoundError(f"Ficheiro não encontrado: {file_times}")
 
+    # Assinatura para invalidar cache quando os dados mudarem
+    sig = f"{file_stops.stat().st_mtime_ns}-{file_times.stat().st_mtime_ns}"
+
+    # ============================================================
+    # 1) Modo leve (Render): se existir cache válida, carrega e sai
+    # ============================================================
+    if cache_path.exists() and sig_path.exists() and sig_path.read_text().strip() == sig:
+        with gzip.open(cache_path, "rb") as f:
+            payload = pickle.load(f)
+
+        G_reduced = payload["G_reduced"]
+        node_df = payload["node_df"]
+        summary_df = payload["summary_df"]
+
+        return G_reduced, node_df, summary_df
+
+    # ============================================================
+    # 2) Modo pesado (PC ou cache inválida): calcula tudo e grava cache
+    # ============================================================
     stops_df = read_csv_auto(file_stops)
     stop_times_df = read_csv_auto(file_times)
 
@@ -333,7 +325,6 @@ def build_data():
         "São Domingos de Benfica": (38.7456, -9.1764), "São Vicente": (38.7186, -9.1274),
         "Margem Sul / Ponte": (38.6700, -9.1670)
     }
-
     freguesias_list = list(freguesias_coords.items())
 
     node_rows = []
@@ -359,16 +350,19 @@ def build_data():
     node_df = pd.DataFrame(node_rows)
     summary_df = compute_freguesia_stats(G_reduced, node_df)
 
-    # Gravar cache para o Render arrancar leve
+    # Gravar cache completo (inclui o grafo inteiro) + assinatura
     payload = {
+        "G_reduced": G_reduced,
         "node_df": node_df,
         "summary_df": summary_df,
-        "edges": list(G_reduced.edges()),
     }
     with gzip.open(cache_path, "wb") as f:
         pickle.dump(payload, f, protocol=pickle.HIGHEST_PROTOCOL)
 
+    sig_path.write_text(sig)
+
     return G_reduced, node_df, summary_df
+
 
 
 
