@@ -285,20 +285,33 @@ def build_data():
     sig = f"{file_stops.stat().st_mtime_ns}-{file_times.stat().st_mtime_ns}"
 
     # ============================================================
-    # 1) Modo leve (Render): se existir cache válida, carrega e sai
+    # 1) Modo leve (Render): carrega cache válida e reconstrói grafo
     # ============================================================
     if cache_path.exists() and sig_path.exists() and sig_path.read_text().strip() == sig:
         with gzip.open(cache_path, "rb") as f:
             payload = pickle.load(f)
 
-        G_reduced = payload["G_reduced"]
         node_df = payload["node_df"]
         summary_df = payload["summary_df"]
+        nodes = payload["nodes"]          # inclui isolados
+        edges = payload["edges"]
+
+        G_reduced = nx.Graph()
+        G_reduced.add_nodes_from(nodes)   # <-- crítico para raio/diâmetro
+        G_reduced.add_edges_from(edges)
+
+        # repor atributos essenciais do nó (para mapa/posições)
+        attr = (
+            node_df.set_index("id")[["name", "lat", "lon"]]
+            .rename(columns={"name": "stop_name", "lat": "stop_lat", "lon": "stop_lon"})
+            .to_dict("index")
+        )
+        nx.set_node_attributes(G_reduced, attr)
 
         return G_reduced, node_df, summary_df
 
     # ============================================================
-    # 2) Modo pesado (PC ou cache inválida): calcula tudo e grava cache
+    # 2) Modo pesado (PC): calcula tudo e grava cache leve
     # ============================================================
     stops_df = read_csv_auto(file_stops)
     stop_times_df = read_csv_auto(file_times)
@@ -350,11 +363,12 @@ def build_data():
     node_df = pd.DataFrame(node_rows)
     summary_df = compute_freguesia_stats(G_reduced, node_df)
 
-    # Gravar cache completo (inclui o grafo inteiro) + assinatura
+    # Cache leve (não guarda objeto Graph inteiro!)
     payload = {
-        "G_reduced": G_reduced,
         "node_df": node_df,
         "summary_df": summary_df,
+        "nodes": list(G_reduced.nodes()),
+        "edges": list(G_reduced.edges()),
     }
     with gzip.open(cache_path, "wb") as f:
         pickle.dump(payload, f, protocol=pickle.HIGHEST_PROTOCOL)
@@ -362,6 +376,7 @@ def build_data():
     sig_path.write_text(sig)
 
     return G_reduced, node_df, summary_df
+
 
 
 
