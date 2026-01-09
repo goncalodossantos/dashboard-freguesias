@@ -282,7 +282,8 @@ def build_data():
         raise FileNotFoundError(f"Ficheiro não encontrado: {file_times}")
 
     # Assinatura para invalidar cache quando os dados mudarem
-    sig = f"{file_stops.stat().st_mtime_ns}-{file_times.stat().st_mtime_ns}"
+    sig = f"{file_stops.stat().st_size}-{file_times.stat().st_size}"
+
 
     # ============================================================
     # 1) Modo leve (Render): carrega cache válida e reconstrói grafo
